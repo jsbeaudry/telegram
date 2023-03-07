@@ -4,6 +4,7 @@ const { Configuration, OpenAIApi } = require("openai");
 const fs = require("fs");
 const path = require("path");
 resolve = require("path").resolve;
+const _ = require("lodash");
 let users = require("./files/users.json");
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
@@ -15,6 +16,7 @@ let chat_context = users.context;
 let chat_limit = users.limits;
 let user_info = users.infos;
 
+// console.log(_.takeRight(chat_context["1603505052"], 2));
 // replace the value below with the Telegram token you receive from @BotFather
 const token = process.env.TOKEN;
 
@@ -73,7 +75,7 @@ bot.on("message", async (msg) => {
   const completion = await openai.createChatCompletion({
     model: "gpt-3.5-turbo",
     max_tokens: 100,
-    messages: chat_context[msg.from.id],
+    messages: _.takeRight(chat_context[msg.from.id], 2),
   });
 
   //   console.log(completion.data.choices[0].message.content);
