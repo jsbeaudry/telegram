@@ -2,19 +2,25 @@ const TelegramBot = require("node-telegram-bot-api");
 require("dotenv").config();
 const { Configuration, OpenAIApi } = require("openai");
 const fs = require("fs");
-const path = require("path");
 resolve = require("path").resolve;
 const _ = require("lodash");
-let users = require("./files/users.json");
+const ffmpeg = require("./ffmpeg");
+const {
+  create,
+  findById,
+  remove,
+  update,
+  find,
+} = require("./database/methods/user");
+const { createMessage, findMessage } = require("./database/methods/message");
+
+const { checkoutsession } = require("./subscription");
+
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
 const openai = new OpenAIApi(configuration);
-// console.log(users);
-let chat_context = users.context;
-let chat_limit = users.limits;
-let user_info = users.infos;
 
 // console.log(_.takeRight(chat_context["1603505052"], 2));
 // replace the value below with the Telegram token you receive from @BotFather
@@ -36,66 +42,160 @@ bot.onText(/\/echo (.+)/, (msg, match) => {
   bot.sendMessage(chatId, resp);
 });
 
+bot.onText(/\/start/, async (msg) => {
+  const chatId = msg.chat.id;
+  let data = msg.from;
+  data.limit = {
+    date: new Date().toDateString(),
+    tokenUsage: 0,
+    limit: 1000,
+  };
+  await create(data);
+  bot.sendMessage(chatId, "Hello");
+});
+
+bot.onText(/\/pay/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const rep = await checkoutsession(20, userId);
+  bot.sendMessage(chatId, rep.url);
+});
 // Listen for any kind of message. There are different kinds of
 // messages.
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
 
-  if (!chat_context[msg.from.id]) {
-    chat_context[msg.from.id] = [
-      {
-        role: "system",
-        content: `usre name is ${msg.from.username}, All the response need to be less that 30 words`,
-      },
-    ];
-    user_info[msg.from.id] = msg.from;
+  let userData = await find({ id: msg.from.id });
 
-    chat_limit[msg.from.id] = {
-      date: new Date().toDateString(),
-      token_usage: 0,
-      limit: 200,
-    };
-  } else if (
-    chat_limit[msg.from.id] &&
-    chat_limit[msg.from.id].date === new Date().toDateString() &&
-    chat_limit[msg.from.id].token_usage >= chat_limit[msg.from.id].limit
+  userData = userData[0];
+  // await findById("6408066cc7f4d4537d3d6c45");
+  // await remove("6408066cc7f4d4537d3d6c45");
+  // await update(1603505052, { first_name: "wqeeqeqw" });
+  if (
+    userData.limit.date === new Date().toDateString() &&
+    userData.limit.tokenUsage >= userData.limit.limit
   ) {
     bot.sendMessage(
       chatId,
-      `Sorry ${msg.from.username} limit of ${
-        chat_limit[msg.from.id].limit
-      } tokens reach  for today`
+      `Sorry ${msg.from.username} limit of ${userData.limit.limit} tokens reach  for today \n/pay to get more \n/check to check limit usage \n/help ti get help \n/contact to signal something
+        `
     );
-
     return;
   }
 
-  chat_context[msg.from.id].push({ role: "user", content: msg.text });
+  if (msg && msg.chat && !msg.voice) {
+    await createMessage({
+      role: "user",
+      content: msg.text,
+      user: userData._id,
+    });
 
-  const completion = await openai.createChatCompletion({
-    model: "gpt-3.5-turbo",
-    max_tokens: 100,
-    messages: _.takeRight(chat_context[msg.from.id], 2),
-  });
+    let messageList = await findMessage({ user: userData._id });
+    messageList = messageList.map((m) => {
+      return {
+        role: m.role,
+        content: m.content,
+      };
+    });
+    const completion = await openai.createChatCompletion({
+      model: "gpt-3.5-turbo",
+      max_tokens: 100,
+      messages: _.concat(
+        [
+          {
+            role: "system",
+            content: `user name is ${userData.username}, All the response need to be less that 100 words`,
+          },
+        ],
+        _.takeRight(messageList, 4)
+      ),
+    });
 
-  //   console.log(completion.data.choices[0].message.content);
-  chat_context[msg.from.id].push({
-    role: "assistant",
-    content: completion.data.choices[0].message.content,
-  });
+    await createMessage({
+      role: "assistant",
+      content: completion.data.choices[0].message.content,
+      user: userData._id,
+    });
 
-  chat_limit[msg.from.id].token_usage =
-    chat_limit[msg.from.id].token_usage + completion.data.usage.total_tokens;
-  console.log(chat_limit[msg.from.id].token_usage);
-  // send a message to the chat acknowledging receipt of their message
-  bot.sendMessage(chatId, completion.data.choices[0].message.content);
+    userData.limit.tokenUsage =
+      userData.limit.tokenUsage + completion.data.usage.total_tokens;
+    console.log(userData.limit.tokenUsage);
 
-  fs.writeFileSync(
-    path.resolve(resolve("./files/"), "users.json"),
-    JSON.stringify({
-      context: chat_context,
-      limits: chat_limit,
-      infos: user_info,
-    })
-  );
+    await update(userData.id, { limit: userData.limit });
+
+    // send a message to the chat acknowledging receipt of their message
+    bot.sendMessage(chatId, completion.data.choices[0].message.content);
+  }
+  if (msg && msg.voice) {
+    const voiceId = msg.voice.file_id;
+
+    // bot.sendVoice(chatId, "./files/guitar.mp3");
+    const audio = await bot.getFileLink(voiceId);
+
+    ffmpeg(audio)
+      .toFormat("wav")
+      .on("progress", async (progress) => {
+        console.log("Processing: " + progress.targetSize + " KB converted");
+
+        const resp = await openai.createTranscription(
+          fs.createReadStream("./current.wav"),
+          "whisper-1"
+        );
+
+        const { status, statusText, data } = resp;
+        console.log(status, statusText, data);
+
+        await createMessage({
+          role: "user",
+          content: data.text,
+          user: userData._id,
+        });
+
+        let messageList = await findMessage({ user: userData._id });
+        messageList = messageList.map((m) => {
+          return {
+            role: m.role,
+            content: m.content,
+          };
+        });
+
+        const completion = await openai.createChatCompletion({
+          model: "gpt-3.5-turbo",
+          max_tokens: 100,
+          messages: _.concat(
+            [
+              {
+                role: "system",
+                content: `user name is ${userData.username}, All the response need to be less that 100 words`,
+              },
+            ],
+            _.takeRight(messageList, 4)
+          ),
+        });
+
+        await createMessage({
+          role: "assistant",
+          content: completion.data.choices[0].message.content,
+          user: userData._id,
+        });
+
+        userData.limit.tokenUsage =
+          userData.limit.tokenUsage + completion.data.usage.total_tokens;
+        console.log(userData.limit.tokenUsage);
+
+        await update(userData.id, { limit: userData.limit });
+
+        // send a message to the chat acknowledging receipt of their message
+        bot.sendMessage(chatId, completion.data.choices[0].message.content);
+
+        // bot.sendMessage(chatId, `${data.text}`);
+      })
+      .on("error", (err) => {
+        console.log("An error occurred: " + err.message);
+      })
+      .on("end", () => {
+        console.log("Processing finished !");
+      })
+      .save("./current.wav"); //path where you want to save your file
+  }
 });
