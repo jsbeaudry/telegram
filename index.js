@@ -5,6 +5,14 @@ const fs = require("fs");
 resolve = require("path").resolve;
 const _ = require("lodash");
 const ffmpeg = require("./ffmpeg");
+
+const express = require("express");
+const { json } = require("express");
+const app = express();
+app.use(express.static("public"));
+app.use(json());
+const PORT = process.env.PORT || 3001;
+
 const {
   create,
   findById,
@@ -199,3 +207,11 @@ bot.on("message", async (msg) => {
       .save("./current.wav"); //path where you want to save your file
   }
 });
+
+app.get("/", (req, res) => {
+  return res.json({ test: "on" });
+});
+
+app.listen(PORT, () => console.log(`Server is up and running on ${PORT}`));
+
+// git push https://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@github.com//jsbeaudry/telegram.git/
